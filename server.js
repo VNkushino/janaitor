@@ -25,26 +25,49 @@ app.get('/api/resolve', async (req, res) => {
         const page = await browser.newPage();
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
-        // Đổi sang domcontentloaded và tăng timeout lên 60 giây để không bị ngắt quãng
+        // 1. Vào link ban đầu
         await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-        // Chờ thêm 3 giây để các script tự động chạy
-        await new Promise(r => setTimeout(r, 3000));
+        // 2. Vòng lặp tự động vượt qua các trang trung gian (tối đa 5 lần)
+        for (let i = 0; i < 5; i++) {
+            await new Promise(r => setTimeout(r, 4000)); // Đợi trang load script trung gian
 
-        let finalUrl = page.url();
+            let currentUrl = page.url();
+            
+            // Nếu đã ra link pass-note thì dừng lại luôn
+            if (currentUrl.includes('pass-note') || !currentUrl.includes('h-game18.xyz/get-pass') && !currentUrl.includes('srnky.com') && !currentUrl.includes('clksz.com')) {
+                break;
+            }
 
-        // Quét tìm link pass-note trong trang
-        if (finalUrl.includes('get-pass')) {
-            let extractedLink = await page.evaluate(() => {
-                let linkEl = document.querySelector('a[href*="pass-note"]') || document.querySelector('[data-link*="pass-note"]');
-                return linkEl ? linkEl.href : null;
+            // Tìm xem trên trang trung gian có nút "Tiếp tục" / "Get Link" / "Continue" hay thẻ chứa link đích không thì bấm/chuyển vào
+            let nextAction = await page.evaluate(() => {
+                // Thử tìm thẻ a dẫn tới pass-note hoặc chứa link ngoài
+                let passLink = document.querySelector('a[href*="pass-note"]');
+                if (passLink) return { type: 'url', val: passLink.href };
+
+                // Thử tìm nút bấm vượt qua trung gian
+                let buttons = Array.from(document.querySelectorAll('button, a, input[type="submit"]'));
+                let btn = buttons.find(b => {
+                    let text = (b.innerText || b.value || '').toLowerCase();
+                    return text.includes('tiếp tục') || text.includes('continue') || text.includes('get link') || text.includes('verify') || text.includes('click');
+                });
+                if (btn) {
+                    btn.click();
+                    return { type: 'clicked' };
+                }
+                return null;
             });
 
-            if (extractedLink) {
-                finalUrl = extractedLink;
+            if (nextAction) {
+                if (nextAction.type === 'url') {
+                    await page.goto(nextAction.val, { waitUntil: 'domcontentloaded', timeout: 30000 });
+                }
+            } else {
+                break; // Không tìm thấy nút bấm hay chuyển hướng nữa thì dừng
             }
         }
 
+        let finalUrl = page.url();
         await browser.close();
 
         return res.json({ success: true, finalUrl });
