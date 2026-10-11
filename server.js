@@ -1,5 +1,5 @@
 const express = require('express');
-const puppeteer = require('puppeteer');
+const fetch = require('node-fetch');
 const cors = require('cors');
 
 const app = express();
@@ -12,49 +12,35 @@ app.get('/api/resolve', async (req, res) => {
         return res.status(400).json({ error: 'Thiếu tham số url!' });
     }
 
-    let browser = null;
     try {
-        // Khởi động trình duyệt ảo ngầm trên server
-        browser = await puppeteer.launch({
-            headless: 'new',
-            args: ['--no-sandbox', '--disable-setuid-sandbox']
+        let currentUrl = targetUrl;
+        
+        // Gửi yêu cầu fetch bám theo chuỗi chuyển hướng (redirect)
+        let response = await fetch(currentUrl, {
+            redirect: 'follow',
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            }
         });
 
-        const page = await browser.newPage();
-        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+        let finalUrl = response.url;
+        let htmlText = await response.text();
 
-        // Truy cập vào link get-pass
-        await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 30000 });
-
-        // Đợi một chút hoặc bấm vào nút nếu cần, sau đó lấy URL hiện tại của trang hoặc tìm thẻ chứa pass-note
-        let finalUrl = page.url();
-
-        // Kiểm tra nếu URL hiện tại vẫn là trang get-pass, thử quét xem có thẻ a nào chứa pass-note không
-        if (finalUrl.includes('get-pass')) {
-            let extractedLink = await page.evaluate(() => {
-                let linkEl = document.querySelector('a[href*="pass-note"]');
-                return linkEl ? linkEl.href : null;
-            });
-
-            if (extractedLink) {
-                finalUrl = extractedLink;
+        // Quét tìm link pass-note trong nội dung trả về nếu có
+        let match = htmlText.match(/https?:\/\/[^\s"'<>]+pass-note[^\s"'<>]+/i) || htmlText.match(/["'](\/pass-note\/[^"']+)["']/i);
+        if (match) {
+            let found = match[1] || match[0];
+            if (found.startsWith('/')) {
+                let parsed = new URL(targetUrl);
+                finalUrl = `${parsed.protocol}//${parsed.host}${found}`;
+            } else {
+                finalUrl = found;
             }
         }
 
-        await browser.close();
-
-        if (finalUrl && finalUrl.includes('pass-note')) {
-            return res.json({ success: true, finalUrl });
-        } else {
-            return res.status(400).json({ 
-                success: false, 
-                error: 'Đã mở trang nhưng không tìm thấy link pass-note đích. Trang có thể yêu cầu click thủ công.' 
-            });
-        }
-
+        res.json({ success: true, finalUrl });
     } catch (error) {
-        if (browser) await browser.close();
-        return res.status(500).json({ success: false, error: error.message });
+        res.status(500).json({ success: false, error: error.message });
     }
 });
 
