@@ -1,5 +1,6 @@
 const express = require('express');
-const fetch = require('node-fetch');
+const chromium = require('@sparticuz/chromium');
+const puppeteer = require('puppeteer-core');
 const cors = require('cors');
 
 const app = express();
@@ -12,75 +13,50 @@ app.get('/api/resolve', async (req, res) => {
         return res.status(400).json({ error: 'Thiếu tham số url!' });
     }
 
+    let browser = null;
     try {
-        let currentUrl = targetUrl;
-        let visited = [currentUrl];
+        // Cấu hình chromium siêu nhẹ cho Render
+        browser = await puppeteer.launch({
+            args: chromium.args,
+            defaultViewport: chromium.defaultViewport,
+            executablePath: await chromium.executablePath(),
+            headless: chromium.headless,
+        });
 
-        // Lặp qua tối đa 5 lần chuyển hướng để bám theo đường đi của trang rút gọn
-        for (let i = 0; i < 5; i++) {
-            let response = await fetch(currentUrl, {
-                redirect: 'manual', // Bắt từng bước chuyển hướng header Location
-                headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Referer': 'https://h-game18.xyz/'
-                }
+        const page = await browser.newPage();
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+
+        // Truy cập vào trang get-pass
+        await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 30000 });
+
+        // Đợi một chút để các script động chạy xong và tự động lấy URL hoặc tìm link chứa pass-note
+        await new Promise(r => setTimeout(r, 3000));
+
+        let finalUrl = page.url();
+
+        // Nếu URL hiện tại vẫn là get-pass, quét tìm thẻ a hoặc button dẫn tới pass-note
+        if (finalUrl.includes('get-pass')) {
+            let extractedLink = await page.evaluate(() => {
+                let linkEl = document.querySelector('a[href*="pass-note"]') || document.querySelector('[data-link*="pass-note"]');
+                return linkEl ? linkEl.href : null;
             });
 
-            let location = response.headers.get('location');
-            if (location) {
-                // Xử lý nếu là đường dẫn tuyệt đối hoặc tương đối
-                if (location.startsWith('/')) {
-                    let parsed = new URL(currentUrl);
-                    currentUrl = `${parsed.protocol}//${parsed.host}${location}`;
-                } else {
-                    currentUrl = location;
-                }
-                visited.push(currentUrl);
-            } else {
-                // Nếu không có header redirect, đọc nội dung HTML xem có chứa link pass-note hoặc script đổi hướng không
-                let htmlText = await response.text();
-                
-                // 1. Tìm trực tiếp từ khóa pass-note
-                let matchNote = htmlText.match(/https?:\/\/[^\s"'<>]+pass-note[^\s"'<>]+/i) || htmlText.match(/["'](\/pass-note\/[^"']+)["']/i);
-                if (matchNote) {
-                    let found = matchNote[1] || matchNote[0];
-                    if (found.startsWith('/')) {
-                        let parsed = new URL(currentUrl);
-                        currentUrl = `${parsed.protocol}//${parsed.host}${found}`;
-                    } else {
-                        currentUrl = found;
-                    }
-                    visited.push(currentUrl);
-                    break;
-                }
-
-                // 2. Tìm nếu trang trung gian chứa link chuyển hướng trong javascript (ví dụ window.location)
-                let matchJs = htmlText.match(/window\.location\.href\s*=\s*['"]([^'"]+)['"]/i) || htmlText.match(/URL=([^"'\s>]+)/i);
-                if (matchJs) {
-                    currentUrl = matchJs[1];
-                    visited.push(currentUrl);
-                    continue; // tiếp tục vòng lặp với link mới
-                }
-
-                break;
-            }
-
-            // Nếu URL hiện tại đã lòi ra chữ pass-note thì dừng luôn
-            if (currentUrl.includes('pass-note')) {
-                break;
+            if (extractedLink) {
+                finalUrl = extractedLink;
             }
         }
 
-        // Kiểm tra xem kết quả cuối cùng có phải là pass-note không
-        let finalResult = visited[visited.length - 1];
-        res.json({ 
-            success: true, 
-            finalUrl: finalResult, 
-            history: visited 
-        });
+        await browser.close();
+
+        if (finalUrl && finalUrl.includes('pass-note')) {
+            return res.json({ success: true, finalUrl });
+        } else {
+            return res.json({ success: true, finalUrl: finalUrl, note: "Đã xử lý qua trình duyệt ảo nhưng chưa tự động nhảy tới note, trả về trạng thái cuối." });
+        }
 
     } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
+        if (browser) await browser.close();
+        return res.status(500).json({ success: false, error: error.message });
     }
 });
 
