@@ -15,7 +15,6 @@ app.get('/api/resolve', async (req, res) => {
 
     let browser = null;
     try {
-        // Cấu hình chromium siêu nhẹ cho Render
         browser = await puppeteer.launch({
             args: chromium.args,
             defaultViewport: chromium.defaultViewport,
@@ -26,15 +25,15 @@ app.get('/api/resolve', async (req, res) => {
         const page = await browser.newPage();
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
-        // Truy cập vào trang get-pass
-        await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 30000 });
+        // Đổi sang domcontentloaded và tăng timeout lên 60 giây để không bị ngắt quãng
+        await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-        // Đợi một chút để các script động chạy xong và tự động lấy URL hoặc tìm link chứa pass-note
+        // Chờ thêm 3 giây để các script tự động chạy
         await new Promise(r => setTimeout(r, 3000));
 
         let finalUrl = page.url();
 
-        // Nếu URL hiện tại vẫn là get-pass, quét tìm thẻ a hoặc button dẫn tới pass-note
+        // Quét tìm link pass-note trong trang
         if (finalUrl.includes('get-pass')) {
             let extractedLink = await page.evaluate(() => {
                 let linkEl = document.querySelector('a[href*="pass-note"]') || document.querySelector('[data-link*="pass-note"]');
@@ -48,11 +47,7 @@ app.get('/api/resolve', async (req, res) => {
 
         await browser.close();
 
-        if (finalUrl && finalUrl.includes('pass-note')) {
-            return res.json({ success: true, finalUrl });
-        } else {
-            return res.json({ success: true, finalUrl: finalUrl, note: "Đã xử lý qua trình duyệt ảo nhưng chưa tự động nhảy tới note, trả về trạng thái cuối." });
-        }
+        return res.json({ success: true, finalUrl });
 
     } catch (error) {
         if (browser) await browser.close();
